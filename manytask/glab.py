@@ -235,6 +235,10 @@ class GitLabApi(RmsApi, AuthApi):
         default_branch: str,
     ) -> None:
         """Provision GitLab resources for the course in an idempotent way."""
+        # Validate required parameters
+        if not all([course_group, course_public_repo, course_students_group]):
+            raise ValueError("course_group, course_public_repo, and course_students_group are required")
+
         logger.info(
             "Provisioning GitLab resources course_group=%s public_repo=%s students_group=%s",
             course_group,
@@ -246,7 +250,11 @@ class GitLabApi(RmsApi, AuthApi):
         self.create_students_group(course_students_group)
 
         project = self._get_project_by_name(course_public_repo)
-        self._configure_public_project(project, course_public_repo, default_branch)
+        if not project:
+            logger.error("Public project not found after creation: %s", course_public_repo)
+            raise RmsApiException(f"Failed to retrieve project {course_public_repo}")
+
+        self._configure_public_project(project, course_group, course_public_repo, default_branch)
 
     def _ensure_group_is_private(self, group: gitlab.v4.objects.Group) -> None:
         desired_visibility = "private"
@@ -258,25 +266,35 @@ class GitLabApi(RmsApi, AuthApi):
     def _configure_public_project(
         self,
         project: gitlab.v4.objects.Project,
+        course_group: str,
         course_public_repo: str,
         default_branch: str,
     ) -> None:
         logger.info("Configuring public project settings path=%s", project.path_with_namespace)
+
+        # Use full project path for CI config to ensure GitLab can find it
+        ci_config_path = f".gitlab-ci.yml@{course_group}/{course_public_repo}"
+
         desired_settings = {
             "merge_requests_access_level": "disabled",
             "container_registry_access_level": "disabled",
             "auto_devops_enabled": False,
             "shared_runners_enabled": True,
             # Ensure pipelines use CI config from the public repo
-            "ci_config_path": f".gitlab-ci.yml@{course_public_repo}",
+            "ci_config_path": ci_config_path,
         }
+
         if default_branch:
             desired_settings["default_branch"] = default_branch
+            logger.info("Setting default branch to %s for project %s", default_branch, project.path_with_namespace)
+        else:
+            logger.warning("No default_branch specified for %s, using GitLab default", project.path_with_namespace)
 
         changed = False
         for setting, value in desired_settings.items():
             current_value = project.attributes.get(setting)
             if current_value != value:
+                logger.debug("Changing %s from %s to %s", setting, current_value, value)
                 setattr(project, setting, value)
                 changed = True
 
