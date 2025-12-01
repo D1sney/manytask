@@ -422,6 +422,24 @@ def create_course() -> ResponseReturnValue:
 
         if app.storage_api.create_course(settings):
             logger.info("Successfully created new course: %s", settings.course_name)
+            try:
+                app.rms_api.prepare_course_resources(
+                    settings.gitlab_course_group,
+                    settings.gitlab_course_public_repo,
+                    settings.gitlab_course_students_group,
+                    settings.gitlab_default_branch,
+                )
+            except Exception:
+                logger.error(
+                    "Course %s created but GitLab resources provisioning failed",
+                    settings.course_name,
+                    exc_info=True,
+                )
+                flash(
+                    "Course created, but GitLab resources were not fully provisioned. "
+                    "Please check GitLab settings manually.",
+                    category="warning",
+                )
             return redirect(url_for("course.course_page", course_name=settings.course_name))
 
         return render_template(

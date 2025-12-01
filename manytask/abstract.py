@@ -226,6 +226,15 @@ class RmsApi(ABC):
     ) -> None: ...
 
     @abstractmethod
+    def prepare_course_resources(
+        self,
+        course_group: str,
+        course_public_repo: str,
+        course_students_group: str,
+        default_branch: str,
+    ) -> None: ...
+
+    @abstractmethod
     def get_url_for_task_base(self, course_public_repo: str, default_branch: str) -> str: ...
 
     @abstractmethod

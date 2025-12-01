@@ -105,6 +105,17 @@ class MockRmsApi(RmsApi):
             self.groups[course_students_group] = MockRmsGroup(name=course_students_group)
         self.groups[course_students_group].projects[rms_user.username] = project
 
+    def prepare_course_resources(
+        self,
+        course_group: str,
+        course_public_repo: str,
+        course_students_group: str,
+        default_branch: str,
+    ) -> None:
+        """Mock provisioning: ensure groups/projects exist to mirror GitLab setup."""
+        self.create_public_repo(course_group, course_public_repo)
+        self.create_students_group(course_students_group)
+
     def get_url_for_task_base(self, course_public_repo: str, default_branch: str) -> str:
         return f"{self.base_url}/{course_public_repo}/blob/{default_branch}"
 

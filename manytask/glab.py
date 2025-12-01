@@ -121,9 +121,10 @@ class GitLabApi(RmsApi, AuthApi):
         for group in self._gitlab.groups.list(get_all=True, search=course_students_group):
             if group.name == course_students_group and group.full_name == course_students_group:
                 logger.info("Group %s already exists", course_students_group)
+                self._ensure_group_is_private(group)
                 return
 
-        self._gitlab.groups.create(
+        group = self._gitlab.groups.create(
             {
                 "name": course_students_group,
                 "path": course_students_group,
@@ -133,6 +134,7 @@ class GitLabApi(RmsApi, AuthApi):
             }
         )
         logger.info("Students group %s created successfully", course_students_group)
+        self._ensure_group_is_private(group)
 
     def check_project_exists(self, project_name: str, project_group: str) -> bool:
         gitlab_project_path = f"{project_group}/{project_name}"
@@ -224,6 +226,65 @@ class GitLabApi(RmsApi, AuthApi):
             logger.info("Access granted for forked project user=%s", member.username)
         except gitlab.GitlabCreateError:
             logger.warning("Access already granted or conflict on forked project user=%s", rms_user.username)
+
+    def prepare_course_resources(
+        self,
+        course_group: str,
+        course_public_repo: str,
+        course_students_group: str,
+        default_branch: str,
+    ) -> None:
+        """Provision GitLab resources for the course in an idempotent way."""
+        logger.info(
+            "Provisioning GitLab resources course_group=%s public_repo=%s students_group=%s",
+            course_group,
+            course_public_repo,
+            course_students_group,
+        )
+
+        self.create_public_repo(course_group, course_public_repo)
+        self.create_students_group(course_students_group)
+
+        project = self._get_project_by_name(course_public_repo)
+        self._configure_public_project(project, course_public_repo, default_branch)
+
+    def _ensure_group_is_private(self, group: gitlab.v4.objects.Group) -> None:
+        desired_visibility = "private"
+        if group.visibility != desired_visibility:
+            logger.info("Updating group visibility to private group=%s", group.full_name)
+            group.visibility = desired_visibility
+            group.save()
+
+    def _configure_public_project(
+        self,
+        project: gitlab.v4.objects.Project,
+        course_public_repo: str,
+        default_branch: str,
+    ) -> None:
+        logger.info("Configuring public project settings path=%s", project.path_with_namespace)
+        desired_settings = {
+            "merge_requests_access_level": "disabled",
+            "container_registry_access_level": "disabled",
+            "auto_devops_enabled": False,
+            "shared_runners_enabled": True,
+            # Ensure pipelines use CI config from the public repo
+            "ci_config_path": f".gitlab-ci.yml@{course_public_repo}",
+        }
+        if default_branch:
+            desired_settings["default_branch"] = default_branch
+
+        changed = False
+        for setting, value in desired_settings.items():
+            current_value = project.attributes.get(setting)
+            if current_value != value:
+                setattr(project, setting, value)
+                changed = True
+
+        if changed:
+            project.save()
+            logger.info("Public project %s settings updated", project.path_with_namespace)
+        else:
+            logger.info("Public project %s already configured", project.path_with_namespace)
 
     def _construct_rms_user(
         self,
