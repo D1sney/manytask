@@ -1,4 +1,4 @@
-FROM python:3.14-alpine AS app_builder
+FROM python:3.12-slim AS app_builder
 
 WORKDIR /app
 
@@ -7,15 +7,18 @@ COPY pyproject.toml uv.lock ./
 ENV UV_VERSION=0.9.5
 RUN pip install uv==${UV_VERSION}
 
-RUN apk add --no-cache build-base
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential curl && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN uv sync --locked
 
 
-FROM python:3.14-alpine AS app
+FROM python:3.12-slim AS app
 
-RUN apk add --no-cache curl \
-    && rm -rf /var/cache/apk/*
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl && \
+    rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -42,9 +45,9 @@ CMD ["gunicorn", "--bind", "0.0.0.0:5050", \
 
 # Set up Yandex.Cloud certificate
 RUN mkdir -p /root/.postgresql && \
-wget "https://storage.yandexcloud.net/cloud-certs/CA.pem" \
-    --output-document /root/.postgresql/root.crt && \
-chmod 0600 /root/.postgresql/root.crt
+    curl -fsSL "https://storage.yandexcloud.net/cloud-certs/CA.pem" \
+    -o /root/.postgresql/root.crt && \
+    chmod 0600 /root/.postgresql/root.crt
 
 
 
