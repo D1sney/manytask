@@ -82,6 +82,43 @@ class GitLabApi(RmsApi, AuthApi):
         except StopIteration:
             raise RuntimeError(f"Unable to find group {group_name}")
 
+    def _ensure_group_exists(
+        self,
+        group_name: str,
+        visibility: str,
+        update_visibility: bool = True,
+    ) -> gitlab.v4.objects.Group:
+        # Support nested groups like "parent/child"
+        parent_group = None
+        leaf_group_name = group_name
+        if "/" in group_name:
+            parent_path, leaf_group_name = group_name.rsplit("/", 1)
+            parent_group = self._ensure_group_exists(parent_path, visibility, update_visibility=False)
+
+        try:
+            group = self._get_group_by_name(group_name)
+            logger.info("Group %s already exists", group_name)
+            if update_visibility and group.visibility != visibility:
+                logger.info("Updating group %s visibility from %s to %s", group_name, group.visibility, visibility)
+                group.visibility = visibility
+                group.save()
+            return group
+        except RuntimeError:
+            logger.info("Group %s not found, creating...", group_name)
+            payload = {
+                "name": leaf_group_name,
+                "path": leaf_group_name,
+                "visibility": visibility,
+                "lfs_enabled": True,
+                "shared_runners_enabled": True,
+            }
+            if parent_group:
+                payload["parent_id"] = parent_group.id
+
+            group = self._gitlab.groups.create(payload)
+            logger.info("Group %s created successfully", group_name)
+            return group
+
     def _get_project_by_name(self, project_name: str) -> gitlab.v4.objects.Project:
         short_project_name = project_name.split("/")[-1]
         logger.debug("Searching for project project_name=%s", project_name)
@@ -95,18 +132,19 @@ class GitLabApi(RmsApi, AuthApi):
             raise RuntimeError(f"Unable to find project {project_name}")
 
     def create_public_repo(self, course_group: str, course_public_repo: str) -> None:
-        logger.info("Creating public repo course_group=%s repo=%s", course_group, course_public_repo)
-        group = self._get_group_by_name(course_group)
+        namespace_path, repo_name, full_path = self._resolve_public_repo_path(course_group, course_public_repo)
+        logger.info("Creating public repo namespace=%s repo_name=%s (full_path=%s)", namespace_path, repo_name, full_path)
+        group = self._ensure_group_exists(namespace_path, visibility="public")
 
-        for project in self._gitlab.projects.list(get_all=True, search=course_public_repo):
-            if project.path_with_namespace == course_public_repo:
-                logger.info("Project %s already exists", course_public_repo)
+        for project in self._gitlab.projects.list(get_all=True, search=repo_name):
+            if project.path_with_namespace == full_path:
+                logger.info("Project %s already exists", full_path)
                 return
 
         self._gitlab.projects.create(
             {
-                "name": course_public_repo,
-                "path": course_public_repo,
+                "name": repo_name,
+                "path": repo_name,
                 "namespace_id": group.id,
                 "visibility": "public",
                 "shared_runners_enabled": True,
@@ -118,22 +156,7 @@ class GitLabApi(RmsApi, AuthApi):
 
     def create_students_group(self, course_students_group: str) -> None:
         logger.info("Creating students group name=%s", course_students_group)
-        for group in self._gitlab.groups.list(get_all=True, search=course_students_group):
-            if group.name == course_students_group and group.full_name == course_students_group:
-                logger.info("Group %s already exists", course_students_group)
-                self._ensure_group_is_private(group)
-                return
-
-        group = self._gitlab.groups.create(
-            {
-                "name": course_students_group,
-                "path": course_students_group,
-                "visibility": "private",
-                "lfs_enabled": True,
-                "shared_runners_enabled": True,
-            }
-        )
-        logger.info("Students group %s created successfully", course_students_group)
+        group = self._ensure_group_exists(course_students_group, visibility="private")
         self._ensure_group_is_private(group)
 
     def check_project_exists(self, project_name: str, project_group: str) -> bool:
@@ -249,12 +272,13 @@ class GitLabApi(RmsApi, AuthApi):
         self.create_public_repo(course_group, course_public_repo)
         self.create_students_group(course_students_group)
 
-        project = self._get_project_by_name(course_public_repo)
+        _, _, full_public_path = self._resolve_public_repo_path(course_group, course_public_repo)
+        project = self._get_project_by_name(full_public_path)
         if not project:
-            logger.error("Public project not found after creation: %s", course_public_repo)
-            raise RmsApiException(f"Failed to retrieve project {course_public_repo}")
+            logger.error("Public project not found after creation: %s", full_public_path)
+            raise RmsApiException(f"Failed to retrieve project {full_public_path}")
 
-        self._configure_public_project(project, course_group, course_public_repo, default_branch)
+        self._configure_public_project(project, full_public_path, default_branch)
 
     def _ensure_group_is_private(self, group: gitlab.v4.objects.Group) -> None:
         desired_visibility = "private"
@@ -266,14 +290,13 @@ class GitLabApi(RmsApi, AuthApi):
     def _configure_public_project(
         self,
         project: gitlab.v4.objects.Project,
-        course_group: str,
         course_public_repo: str,
         default_branch: str,
     ) -> None:
         logger.info("Configuring public project settings path=%s", project.path_with_namespace)
 
         # Use full project path for CI config to ensure GitLab can find it
-        ci_config_path = f".gitlab-ci.yml@{course_group}/{course_public_repo}"
+        ci_config_path = f".gitlab-ci.yml@{course_public_repo}"
 
         desired_settings = {
             "merge_requests_access_level": "disabled",
@@ -303,6 +326,20 @@ class GitLabApi(RmsApi, AuthApi):
             logger.info("Public project %s settings updated", project.path_with_namespace)
         else:
             logger.info("Public project %s already configured", project.path_with_namespace)
+
+    def _resolve_public_repo_path(self, course_group: str, course_public_repo: str) -> tuple[str, str, str]:
+        """Return (namespace_path, repo_name, full_path) for the public repo.
+
+        Allows passing either a full path (group/repo) or just repo name. If the
+        namespace part differs from course_group, we respect the provided namespace.
+        """
+        if "/" in course_public_repo:
+            namespace_path, repo_name = course_public_repo.rsplit("/", 1)
+        else:
+            namespace_path, repo_name = course_group, course_public_repo
+
+        full_path = f"{namespace_path}/{repo_name}"
+        return namespace_path, repo_name, full_path
 
     def _construct_rms_user(
         self,
