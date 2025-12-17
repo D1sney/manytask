@@ -6,7 +6,6 @@ services:
             target: docs
         container_name: test-manytask-docs
         restart: always
-        network_mode: bridge
         expose:
             - "80"
         environment:
@@ -43,7 +42,6 @@ services:
                 condition: service_healthy
         links:
             -   postgres:postgres
-        network_mode: bridge
 
     postgres:
         image: postgres:17
@@ -57,7 +55,6 @@ services:
         volumes:
             - postgres_data:/var/lib/postgresql/data
             - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
-        network_mode: bridge
         healthcheck:
             test: ["CMD-SHELL", "pg_isready -U adminmanytask -d manytask"]
             interval: 5s
@@ -72,7 +69,7 @@ services:
         environment:
             GITLAB_ROOT_PASSWORD: "changeme123!"
             GITLAB_OMNIBUS_CONFIG: |
-                external_url 'http://gitlab:8929'
+                external_url 'http://localhost:8929'
                 gitlab_rails['gitlab_shell_ssh_port'] = 8222
         ports:
             - "8929:8929"    # HTTP web UI
@@ -81,7 +78,6 @@ services:
             - gitlab_config:/etc/gitlab
             - gitlab_logs:/var/log/gitlab
             - gitlab_data:/var/opt/gitlab
-        network_mode: bridge
 
     gitlab-runner:
         image: gitlab/gitlab-runner:alpine
@@ -92,7 +88,6 @@ services:
             - /var/run/docker.sock:/var/run/docker.sock
         depends_on:
             - gitlab
-        network_mode: bridge
 
 
 volumes:

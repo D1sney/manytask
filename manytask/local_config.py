@@ -8,6 +8,7 @@ from dataclasses import dataclass
 class LocalConfig:
     # gitlab
     gitlab_url: str
+    gitlab_oauth_url: str  # URL for OAuth redirects (accessible from browser)
     gitlab_admin_token: str
 
     # gitlab oauth2
@@ -16,9 +17,11 @@ class LocalConfig:
 
     @classmethod
     def from_env(cls) -> LocalConfig:
+        gitlab_url = os.environ.get("GITLAB_URL", "https://gitlab.manytask.org")
         return cls(
             # gitlab
-            gitlab_url=os.environ.get("GITLAB_URL", "https://gitlab.manytask.org"),
+            gitlab_url=gitlab_url,
+            gitlab_oauth_url=os.environ.get("GITLAB_OAUTH_URL", gitlab_url),  # fallback to GITLAB_URL if not set
             gitlab_admin_token=os.environ["GITLAB_ADMIN_TOKEN"],
             # gitlab oauth2
             gitlab_client_id=os.environ["GITLAB_CLIENT_ID"],
@@ -30,6 +33,7 @@ class LocalConfig:
 class DebugLocalConfig(LocalConfig):
     # gitlab
     gitlab_url: str = "https://gitlab.manytask.org"
+    gitlab_oauth_url: str = "https://gitlab.manytask.org"
     gitlab_admin_token: str = ""
 
     # gitlab oauth2
